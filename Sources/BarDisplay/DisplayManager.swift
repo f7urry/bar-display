@@ -1,5 +1,8 @@
 import AppKit
 import CoreGraphics
+import os
+
+private let log = Logger(subsystem: "id.appfuxion.BarDisplay", category: "display")
 
 struct DisplayMode: Identifiable, Hashable {
     let id: Int32            // CGDisplayModeGetIODisplayModeID
@@ -44,20 +47,50 @@ final class DisplayManager: ObservableObject {
 
     init() {
         let ctx = Unmanaged.passUnretained(self).toOpaque()
-        CGDisplayRegisterReconfigurationCallback({ _, flags, ctx in
-            guard !flags.contains(.beginConfigurationFlag), let ctx else { return }
+        CGDisplayRegisterReconfigurationCallback({ id, flags, ctx in
+            log.debug("display \(id, privacy: .public) reconfigured, flags \(flags.rawValue, privacy: .public), vendor \(CGDisplayVendorNumber(id), privacy: .public)")
+            guard let ctx else { return }
             let manager = Unmanaged<DisplayManager>.fromOpaque(ctx).takeUnretainedValue()
+            // The unplugged display can still be listed as online at this point, so act on the
+            // remove event itself rather than waiting for the online list to catch up.
+            if flags.contains(.removeFlag) || flags.contains(.disabledFlag) {
+                DispatchQueue.main.async { manager.enableBuiltinIfNoExternal(online: manager.onlineIDs().filter { $0 != id }) }
+            }
+            guard !flags.contains(.beginConfigurationFlag) else { return }
             DispatchQueue.main.async { manager.refresh() }
         }, ctx)
         refresh()
     }
 
-    func refresh() {
+    /// No external display left while the built-in one is off: turn the built-in back on
+    /// so the user is never left without a usable screen.
+    /// Vendor IDs that don't belong to real hardware: none, unknown, and 'unkn'.
+    private static let placeholderVendors: Set<UInt32> = [0, 0xFFFF_FFFF, 0x756E_6B6E]
+
+    /// macOS swaps in a placeholder display (vendor 'unkn') when the last real screen goes away;
+    /// it must not count as an external monitor.
+    private static func isPhysicalExternal(_ id: CGDirectDisplayID) -> Bool {
+        CGDisplayIsBuiltin(id) == 0 && !placeholderVendors.contains(CGDisplayVendorNumber(id))
+    }
+
+    private func enableBuiltinIfNoExternal(online: [CGDirectDisplayID]) {
+        guard !online.contains(where: Self.isPhysicalExternal),
+              let builtin = disabled.keys.first(where: { CGDisplayIsBuiltin($0) != 0 }) else { return }
+        let err = SkyLight.setEnabled(true, display: builtin)
+        log.notice("no external display, enabling built-in \(builtin, privacy: .public) -> CGError \(err.rawValue, privacy: .public)")
+        if err == .success { disabled.removeValue(forKey: builtin) }
+    }
+
+    private func onlineIDs() -> [CGDirectDisplayID] {
         var count: UInt32 = 0
         CGGetOnlineDisplayList(0, nil, &count)
         var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
         CGGetOnlineDisplayList(count, &ids, &count)
-        let online = Array(ids.prefix(Int(count)))
+        return Array(ids.prefix(Int(count)))
+    }
+
+    func refresh() {
+        let online = onlineIDs()
 
         var list = online.map(makeDisplay)
         var stillDisabled = disabled
@@ -70,14 +103,7 @@ final class DisplayManager: ObservableObject {
         }
         disabled = stillDisabled
 
-        // External display unplugged while the built-in one was off: bring the built-in back
-        // so the user is never left without a usable screen.
-        if !list.contains(where: \.isEnabled),
-           let fallback = stillDisabled.keys.first(where: { CGDisplayIsBuiltin($0) != 0 }) ?? stillDisabled.keys.first,
-           SkyLight.setEnabled(true, display: fallback) == .success {
-            disabled.removeValue(forKey: fallback)
-            DispatchQueue.main.async { self.refresh() }
-        }
+        enableBuiltinIfNoExternal(online: online)
 
         displays = list.sorted { ($0.isMain ? 0 : 1, $0.id) < ($1.isMain ? 0 : 1, $1.id) }
     }
