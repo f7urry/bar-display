@@ -54,23 +54,59 @@ private struct DisplayRow: View {
             .disabled(!SkyLight.isAvailable)
 
             if display.isEnabled, !display.modes.isEmpty {
+                let current = display.modes.first { $0.id == display.currentModeID }
+                let wantsHiDPI = current?.isHiDPI ?? false
+
+                HStack {
                 Picker("Resolution", selection: Binding(
-                    get: { display.currentModeID ?? -1 },
-                    set: { id in
-                        if let mode = display.modes.first(where: { $0.id == id }) {
+                    get: { current.map(Self.sizeKey) ?? "" },
+                    set: { key in
+                        if let mode = bestMode(for: key, hiDPI: wantsHiDPI, refresh: current?.refreshRate) {
                             manager.setMode(mode, for: display.id)
                         }
                     })) {
-                    let hidpi = display.modes.filter(\.isHiDPI)
-                    if !hidpi.isEmpty {
-                        Section("HiDPI") { ForEach(hidpi) { Text($0.label).tag($0.id) } }
-                    }
-                    Section("Standard") {
-                        ForEach(display.modes.filter { !$0.isHiDPI }) { Text($0.label).tag($0.id) }
+                    ForEach(sizes, id: \.self) { key in
+                        Text(key.replacingOccurrences(of: "x", with: " × ")).tag(key)
                     }
                 }
                 .labelsHidden()
+
+                Toggle("HiDPI", isOn: Binding(
+                    get: { wantsHiDPI },
+                    set: { on in
+                        if let current, let mode = display.modes.first(where: {
+                            Self.sizeKey($0) == Self.sizeKey(current) && $0.isHiDPI == on
+                        }) {
+                            manager.setMode(mode, for: display.id)
+                        }
+                    }))
+                .toggleStyle(.switch)
+                .disabled(current.map { !hasBothVariants(Self.sizeKey($0)) } ?? true)
+                .help("Render the current resolution at 2× pixel density")
+                .fixedSize()
+                }
             }
         }
+    }
+
+    private static func sizeKey(_ mode: DisplayMode) -> String { "\(mode.width)x\(mode.height)" }
+
+    /// Unique point resolutions, largest first.
+    private var sizes: [String] {
+        var seen = Set<String>()
+        return display.modes.map(Self.sizeKey).filter { seen.insert($0).inserted }
+    }
+
+    private func hasBothVariants(_ key: String) -> Bool {
+        let variants = Set(display.modes.filter { Self.sizeKey($0) == key }.map(\.isHiDPI))
+        return variants.count == 2
+    }
+
+    /// Prefers the requested HiDPI state and refresh rate, falling back to whatever exists for that size.
+    private func bestMode(for key: String, hiDPI: Bool, refresh: Double?) -> DisplayMode? {
+        let candidates = display.modes.filter { Self.sizeKey($0) == key }
+        let sameDensity = candidates.filter { $0.isHiDPI == hiDPI }
+        let pool = sameDensity.isEmpty ? candidates : sameDensity
+        return pool.first { $0.refreshRate == refresh } ?? pool.first
     }
 }

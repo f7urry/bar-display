@@ -5,7 +5,7 @@ A lightweight macOS menu bar app for managing displays, inspired by BetterDispla
 ## Features
 
 - **Display list:** every connected display, with built-in and main display indicators. The list refreshes automatically when displays change.
-- **Resolution switching:** a resolution picker per display, with HiDPI and Standard modes listed separately.
+- **Resolution switching:** a resolution picker per display, plus a **HiDPI** switch that renders the selected resolution at 2× pixel density.
 - **Disconnect toggle:** soft-disconnects and reconnects a display without unplugging it. Turning off the last active display is blocked.
 - **Launch at login:** a switch that registers the app as a login item.
 
