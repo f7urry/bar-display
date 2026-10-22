@@ -69,6 +69,16 @@ final class DisplayManager: ObservableObject {
                                 isEnabled: false, modes: [], currentModeID: nil))
         }
         disabled = stillDisabled
+
+        // External display unplugged while the built-in one was off: bring the built-in back
+        // so the user is never left without a usable screen.
+        if !list.contains(where: \.isEnabled),
+           let fallback = stillDisabled.keys.first(where: { CGDisplayIsBuiltin($0) != 0 }) ?? stillDisabled.keys.first,
+           SkyLight.setEnabled(true, display: fallback) == .success {
+            disabled.removeValue(forKey: fallback)
+            DispatchQueue.main.async { self.refresh() }
+        }
+
         displays = list.sorted { ($0.isMain ? 0 : 1, $0.id) < ($1.isMain ? 0 : 1, $1.id) }
     }
 
