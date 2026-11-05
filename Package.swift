@@ -5,6 +5,9 @@ let package = Package(
     name: "BarDisplay",
     platforms: [.macOS(.v13)],
     targets: [
-        .executableTarget(name: "BarDisplay", path: "Sources/BarDisplay", exclude: ["Info.plist"])
+        .target(name: "CGVirtualDisplayPrivate", path: "Sources/CGVirtualDisplayPrivate",
+                linkerSettings: [.linkedFramework("CoreGraphics")]),
+        .executableTarget(name: "BarDisplay", dependencies: ["CGVirtualDisplayPrivate"],
+                          path: "Sources/BarDisplay", exclude: ["Info.plist"])
     ]
 )

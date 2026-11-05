@@ -16,4 +16,7 @@ for s in 16 32 128 256 512; do
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 codesign --force --sign - "$APP"
+pkill BarDisplay
+rm ~/Applications/BarDisplay.app
+cp BarDisplay.app ~/Applications/
 echo "Built $APP"
