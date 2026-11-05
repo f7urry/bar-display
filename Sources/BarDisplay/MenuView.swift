@@ -98,82 +98,44 @@ private struct DisplayRow: View {
 
             if display.isEnabled, !display.modes.isEmpty {
                 let current = display.modes.first { $0.id == display.currentModeID }
-                let wantsHiDPI = display.hiDPIVirtual || (current?.isHiDPI ?? false)
-                let nativeVariant = current.map { hasBothVariants(Self.sizeKey($0)) } ?? false
-                let canForce = !display.isBuiltin && VirtualHiDPI.isAvailable
-                let hiDPIEnabled = display.hiDPIVirtual || nativeVariant || canForce
-
-                HStack(spacing: 6) {
-                    Picker("Resolution", selection: Binding(
-                        get: { current.map(Self.sizeKey) ?? "" },
-                        set: { key in
-                            if let mode = bestMode(for: key, hiDPI: wantsHiDPI, refresh: current?.refreshRate) {
-                                manager.setMode(mode, for: display.modeTargetID)
-                            }
-                        })) {
-                        ForEach(sizes, id: \.self) { key in
-                            Text(key.replacingOccurrences(of: "x", with: " × ")).tag(key)
+                Picker("Resolution", selection: Binding(
+                    get: { current.map(Self.key) ?? "" },
+                    set: { key in
+                        if let mode = bestMode(for: key, refresh: current?.refreshRate) {
+                            manager.setMode(mode, for: display.id)
                         }
+                    })) {
+                    ForEach(options, id: \.self) { key in
+                        Text(Self.label(key)).tag(key)
                     }
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .frame(maxWidth: .infinity)
-
-                    Button {
-                        setHiDPI(!wantsHiDPI, current: current, nativeVariant: nativeVariant, canForce: canForce)
-                    } label: {
-                        HStack(spacing: 3) {
-                            if wantsHiDPI { Image(systemName: "checkmark") }
-                            Text("HiDPI")
-                        }
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(wantsHiDPI ? Color.white : Color.primary)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 4)
-                        .background(Capsule().fill(wantsHiDPI ? accent : Color.secondary.opacity(0.2)))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!hiDPIEnabled)
-                    .opacity(hiDPIEnabled ? 1 : 0.5)
-                    .help(nativeVariant || display.hiDPIVirtual
-                          ? "Render the current resolution at 2× pixel density"
-                          : "Force 2× rendering by mirroring this display to a virtual HiDPI display")
-                    .fixedSize()
                 }
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(maxWidth: .infinity)
             }
         }
     }
 
-    private func setHiDPI(_ on: Bool, current: DisplayMode?, nativeVariant: Bool, canForce: Bool) {
-        if display.hiDPIVirtual {
-            if !on { manager.setForcedHiDPI(false, for: display) }
-        } else if nativeVariant, let current, let mode = display.modes.first(where: {
-            Self.sizeKey($0) == Self.sizeKey(current) && $0.isHiDPI == on
-        }) {
-            manager.setMode(mode, for: display.id)
-        } else if on, canForce {
-            manager.setForcedHiDPI(true, for: display)
-        }
+    /// One entry per point size and density, e.g. "1440x810" and "1440x810@2x".
+    private static func key(_ mode: DisplayMode) -> String {
+        "\(mode.width)x\(mode.height)\(mode.isHiDPI ? "@2x" : "")"
     }
 
-    private static func sizeKey(_ mode: DisplayMode) -> String { "\(mode.width)x\(mode.height)" }
+    private static func label(_ key: String) -> String {
+        let hiDPI = key.hasSuffix("@2x")
+        let size = key.replacingOccurrences(of: "@2x", with: "").replacingOccurrences(of: "x", with: " × ")
+        return hiDPI ? "\(size)  HiDPI" : size
+    }
 
-    /// Unique point resolutions, largest first.
-    private var sizes: [String] {
+    /// Unique resolutions, largest first, with the HiDPI version of a size listed before the normal one.
+    private var options: [String] {
         var seen = Set<String>()
-        return display.modes.map(Self.sizeKey).filter { seen.insert($0).inserted }
+        return display.modes.map(Self.key).filter { seen.insert($0).inserted }
     }
 
-    private func hasBothVariants(_ key: String) -> Bool {
-        let variants = Set(display.modes.filter { Self.sizeKey($0) == key }.map(\.isHiDPI))
-        return variants.count == 2
-    }
-
-    /// Prefers the requested HiDPI state and refresh rate, falling back to whatever exists for that size.
-    private func bestMode(for key: String, hiDPI: Bool, refresh: Double?) -> DisplayMode? {
-        let candidates = display.modes.filter { Self.sizeKey($0) == key }
-        let sameDensity = candidates.filter { $0.isHiDPI == hiDPI }
-        let pool = sameDensity.isEmpty ? candidates : sameDensity
-        return pool.first { $0.refreshRate == refresh } ?? pool.first
+    /// Prefers the current refresh rate, falling back to the highest one for that resolution.
+    private func bestMode(for key: String, refresh: Double?) -> DisplayMode? {
+        let candidates = display.modes.filter { Self.key($0) == key }
+        return candidates.first { $0.refreshRate == refresh } ?? candidates.first
     }
 }
