@@ -28,32 +28,12 @@ struct Display: Identifiable {
     let isEnabled: Bool
     let modes: [DisplayMode]
     let currentModeID: Int32?
-    /// True while this display mirrors a virtual HiDPI display; `modes` then belong to the virtual one.
-    var hiDPIVirtual = false
-    /// The display that resolution changes go to (the virtual one while forced HiDPI is on).
-    var modeTargetID: CGDirectDisplayID { virtualID ?? id }
-    var virtualID: CGDirectDisplayID?
 }
 
 final class DisplayManager: ObservableObject {
     @Published private(set) var displays: [Display] = []
     @Published var lastError: String?
     @Published private(set) var launchAtLogin = SMAppService.mainApp.status == .enabled
-
-    private let virtualHiDPI = VirtualHiDPI()
-    private var names: [CGDirectDisplayID: String] = [:]
-
-    /// Physical display ID -> point width, for displays the user forced to HiDPI.
-    private var forcedHiDPI: [CGDirectDisplayID: Int] {
-        get {
-            let raw = UserDefaults.standard.dictionary(forKey: "forcedHiDPI") as? [String: Int] ?? [:]
-            return Dictionary(uniqueKeysWithValues: raw.compactMap { k, v in UInt32(k).map { ($0, v) } })
-        }
-        set {
-            UserDefaults.standard.set(Dictionary(uniqueKeysWithValues: newValue.map { (String($0), $1) }),
-                                      forKey: "forcedHiDPI")
-        }
-    }
 
     /// Displays we disabled disappear from the online list, so remember them to allow re-enabling.
     private var disabled: [CGDirectDisplayID: String] {
@@ -91,13 +71,12 @@ final class DisplayManager: ObservableObject {
 
     /// macOS swaps in a placeholder display (vendor 'unkn') when the last real screen goes away;
     /// it must not count as an external monitor.
-    private func isPhysicalExternal(_ id: CGDirectDisplayID) -> Bool {
-        CGDisplayIsBuiltin(id) == 0 && !Self.placeholderVendors.contains(CGDisplayVendorNumber(id))
-            && !virtualHiDPI.virtualIDs.contains(id)
+    private static func isPhysicalExternal(_ id: CGDirectDisplayID) -> Bool {
+        CGDisplayIsBuiltin(id) == 0 && !placeholderVendors.contains(CGDisplayVendorNumber(id))
     }
 
     private func enableBuiltinIfNoExternal(online: [CGDirectDisplayID]) {
-        guard !online.contains(where: isPhysicalExternal),
+        guard !online.contains(where: Self.isPhysicalExternal),
               let builtin = disabled.keys.first(where: { CGDisplayIsBuiltin($0) != 0 }) else { return }
         let err = SkyLight.setEnabled(true, display: builtin)
         log.notice("no external display, enabling built-in \(builtin, privacy: .public) -> CGError \(err.rawValue, privacy: .public)")
@@ -123,14 +102,7 @@ final class DisplayManager: ObservableObject {
     }
 
     func refresh() {
-        var online = onlineIDs()
-
-        // A virtual HiDPI display must never outlive its monitor, or it would hold windows off-screen.
-        for physical in virtualHiDPI.physicalIDs where !online.contains(physical) {
-            virtualHiDPI.stop(physical: physical)
-        }
-        let virtualIDs = virtualHiDPI.virtualIDs
-        online.removeAll { virtualIDs.contains($0) }
+        let online = onlineIDs()
 
         var list = online.map(makeDisplay)
         var stillDisabled = disabled
@@ -144,7 +116,6 @@ final class DisplayManager: ObservableObject {
         disabled = stillDisabled
 
         enableBuiltinIfNoExternal(online: online)
-        restoreForcedHiDPI(list)
 
         displays = list.sorted { ($0.isMain ? 0 : 1, $0.id) < ($1.isMain ? 0 : 1, $1.id) }
     }
@@ -153,77 +124,56 @@ final class DisplayManager: ObservableObject {
         let screen = NSScreen.screens.first {
             ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id
         }
-        // A mirrored display has no NSScreen of its own, so keep the last name we saw.
-        if let screenName = screen?.localizedName, virtualHiDPI.virtualID(for: id) == nil { names[id] = screenName }
-        let name = names[id] ?? "Display \(id)"
-        let vid = virtualHiDPI.virtualID(for: id)
-        let modeSource = vid ?? id
-        var display = Display(id: id, name: name,
-                              isBuiltin: CGDisplayIsBuiltin(id) != 0,
-                              isMain: CGDisplayIsMain(modeSource) != 0,
-                              isEnabled: CGDisplayIsActive(id) != 0 || CGDisplayIsInMirrorSet(id) != 0,
-                              modes: modes(for: modeSource).filter { vid == nil || $0.isHiDPI },
-                              currentModeID: CGDisplayCopyDisplayMode(modeSource).map { $0.ioDisplayModeID })
-        display.hiDPIVirtual = vid != nil
-        display.virtualID = vid
-        return display
-    }
-
-    /// Re-creates forced HiDPI for monitors that come back (app launch, re-plug, re-enable).
-    private func restoreForcedHiDPI(_ list: [Display]) {
-        let active = virtualHiDPI.physicalIDs
-        for (id, width) in forcedHiDPI where !active.contains(id) {
-            guard let display = list.first(where: { $0.id == id && $0.isEnabled }) else { continue }
-            startVirtualHiDPI(display, width: width)
-        }
-    }
-
-    private func startVirtualHiDPI(_ display: Display, width: Int?) {
-        virtualHiDPI.start(physical: display.id, name: display.name, preferredWidth: width) { [weak self] err in
-            guard let self else { return }
-            if err != .success { self.forcedHiDPI.removeValue(forKey: display.id) }
-            self.report(err, "force HiDPI")
-            self.refresh()
-        }
-    }
-
-    /// Turns forced (virtual display) HiDPI on or off for a display macOS has no HiDPI mode for.
-    func setForcedHiDPI(_ on: Bool, for display: Display) {
-        if on {
-            let width = display.modes.first { $0.id == display.currentModeID }?.width
-            forcedHiDPI[display.id] = width ?? 0
-            startVirtualHiDPI(display, width: width)
-        } else {
-            forcedHiDPI.removeValue(forKey: display.id)
-            virtualHiDPI.stop(physical: display.id)
-            refresh()
-        }
+        let name = screen?.localizedName ?? "Display \(id)"
+        return Display(id: id, name: name,
+                       isBuiltin: CGDisplayIsBuiltin(id) != 0,
+                       isMain: CGDisplayIsMain(id) != 0,
+                       isEnabled: CGDisplayIsActive(id) != 0 || CGDisplayIsInMirrorSet(id) != 0,
+                       modes: modes(for: id),
+                       currentModeID: CGDisplayCopyDisplayMode(id).map { $0.ioDisplayModeID })
     }
 
     private func modes(for id: CGDirectDisplayID) -> [DisplayMode] {
         let options = [kCGDisplayShowDuplicateLowResolutionModes: kCFBooleanTrue] as CFDictionary
         guard let raw = CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode] else { return [] }
-        var seen = Set<String>()
-        return raw.filter { $0.isUsableForDesktopGUI() }
+        var list = raw.filter { $0.isUsableForDesktopGUI() }
             .map { DisplayMode(id: $0.ioDisplayModeID, width: $0.width, height: $0.height,
                                pixelWidth: $0.pixelWidth, pixelHeight: $0.pixelHeight,
                                refreshRate: $0.refreshRate) }
-            .sorted { ($0.width, $0.isHiDPI ? 1 : 0, $0.refreshRate) > ($1.width, $1.isHiDPI ? 1 : 0, $1.refreshRate) }
+        // Add HiDPI modes macOS hides from the public list but the display supports, such as
+        // 1920 × 1080 HiDPI on a 1080p monitor. Modes the public list marks unusable stay out, and so
+        // do hidden modes larger than the panel's native size (e.g. 1600 × 1200 on a 1080p panel).
+        let publicIDs = Set(raw.map(\.ioDisplayModeID))
+        let native = raw.filter { $0.pixelWidth == $0.width }
+            .max { $0.width * $0.height < $1.width * $1.height }
+        list += SkyLight.allModes(id).filter { m in
+            !publicIDs.contains(m.number) && m.density == 2
+                && native.map { m.width <= $0.width && m.height <= $0.height } ?? false
+        }.map {
+            DisplayMode(id: $0.number, width: $0.width, height: $0.height,
+                        pixelWidth: Int((Float($0.width) * max($0.density, 1)).rounded()),
+                        pixelHeight: Int((Float($0.height) * max($0.density, 1)).rounded()),
+                        refreshRate: Double($0.refreshRate))
+        }
+        var seen = Set<String>()
+        return list
+            .sorted { ($0.width, $0.height, $0.isHiDPI ? 1 : 0, $0.refreshRate) > ($1.width, $1.height, $1.isHiDPI ? 1 : 0, $1.refreshRate) }
             .filter { seen.insert("\($0.width)x\($0.height)-\($0.isHiDPI)-\(Int($0.refreshRate))").inserted }
     }
 
     func setMode(_ mode: DisplayMode, for id: CGDirectDisplayID) {
         let options = [kCGDisplayShowDuplicateLowResolutionModes: kCFBooleanTrue] as CFDictionary
-        guard let modes = CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode],
-              let target = modes.first(where: { $0.ioDisplayModeID == mode.id }) else { return }
+        let modes = CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode] ?? []
+        guard let target = modes.first(where: { $0.ioDisplayModeID == mode.id }) else {
+            // A hidden mode only exists in SkyLight's table.
+            report(SkyLight.setMode(mode.id, display: id), "change resolution")
+            return
+        }
         var config: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&config) == .success else { return }
         let err = CGConfigureDisplayWithDisplayMode(config, id, target, nil)
         if err == .success {
             report(CGCompleteDisplayConfiguration(config, .permanently), "change resolution")
-            if let physical = virtualHiDPI.physicalIDs.first(where: { virtualHiDPI.virtualID(for: $0) == id }) {
-                forcedHiDPI[physical] = mode.width
-            }
         } else {
             CGCancelDisplayConfiguration(config)
             report(err, "change resolution")
@@ -235,10 +185,7 @@ final class DisplayManager: ObservableObject {
             lastError = "Can't disconnect the last active display."
             return
         }
-        if !enabled {
-            disabled[display.id] = display.name
-            virtualHiDPI.stop(physical: display.id)
-        }
+        if !enabled { disabled[display.id] = display.name }
         let err = SkyLight.setEnabled(enabled, display: display.id)
         report(err, enabled ? "connect display" : "disconnect display")
         if enabled && err == .success { disabled.removeValue(forKey: display.id) }
