@@ -20,4 +20,5 @@ pkill -x BarDisplay || true
 mkdir -p ~/Applications
 rm -rf ~/Applications/BarDisplay.app
 cp -R BarDisplay.app ~/Applications/
-echo "Built $APP"
+echo "Built $APP, installed to ~/Applications"
+open ~/Applications/BarDisplay.app
