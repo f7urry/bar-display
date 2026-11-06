@@ -1,11 +1,9 @@
-import ServiceManagement
 import SwiftUI
 
 private let accent = Color.orange
 
 struct MenuView: View {
     @ObservedObject var manager: DisplayManager
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -22,16 +20,8 @@ struct MenuView: View {
                 Spacer()
                 Menu {
                     Toggle("Launch at login", isOn: Binding(
-                        get: { launchAtLogin },
-                        set: { enabled in
-                            do {
-                                if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
-                                manager.lastError = nil
-                            } catch {
-                                manager.lastError = "Launch at login failed: \(error.localizedDescription)"
-                            }
-                            launchAtLogin = SMAppService.mainApp.status == .enabled
-                        }))
+                        get: { manager.launchAtLogin },
+                        set: { manager.setLaunchAtLogin($0) }))
                     Divider()
                     Button("Quit") { NSApplication.shared.terminate(nil) }
                 } label: {

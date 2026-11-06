@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import os
+import ServiceManagement
 
 private let log = Logger(subsystem: "id.appfuxion.BarDisplay", category: "display")
 
@@ -37,6 +38,7 @@ struct Display: Identifiable {
 final class DisplayManager: ObservableObject {
     @Published private(set) var displays: [Display] = []
     @Published var lastError: String?
+    @Published private(set) var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     private let virtualHiDPI = VirtualHiDPI()
     private var names: [CGDirectDisplayID: String] = [:]
@@ -108,6 +110,16 @@ final class DisplayManager: ObservableObject {
         var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
         CGGetOnlineDisplayList(count, &ids, &count)
         return Array(ids.prefix(Int(count)))
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            lastError = nil
+        } catch {
+            lastError = "Launch at login failed: \(error.localizedDescription)"
+        }
+        launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
     func refresh() {
